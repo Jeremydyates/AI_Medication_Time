@@ -87,16 +87,11 @@ def play_alert_sound():
         print("Error playing sound:", e)
 
 
-
-
-
-
-
 class MedicationApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Yates Family Medication Schedule,         Select a family member to begin.")
-        self.root.geometry("650x650")
+        self.root.geometry("600x850")
 
         self.db_path = DB_PATH
         self.users = self.fetch_users()
@@ -158,8 +153,8 @@ class MedicationApp:
 
         # Set fixed width for canvas if needed (adjust width as necessary)
         canvas_width = 500
-
-        self.canvas = tk.Canvas(canvas_container, width=canvas_width)
+        canvas_height = 500  # Or any height you want
+        self.canvas = tk.Canvas(canvas_container, width=canvas_width, height=canvas_height)
         self.scrollbar = ttk.Scrollbar(canvas_container, orient="vertical", command=self.canvas.yview)
 
         self.scrollable_frame = tk.Frame(self.canvas)
@@ -368,32 +363,77 @@ class MedicationApp:
 
            
     
-    def open_medication_editor(self):
+    def open_medication_editor(self, edit_index=None):
+        """Open the medication editor. If edit_index is provided, edit that medication."""
         if not self.current_user:
             messagebox.showwarning("No User Selected", "Select a user first.")
             return
 
+        # Get current medications
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        user_id = self.current_user[0]
+        c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
+        raw = c.fetchone()
+        existing_meds = json.loads(raw[0]) if raw and raw[0] else []
+        conn.close()
+
+        # Check if we're editing an existing medication
+        is_editing = edit_index is not None and 0 <= edit_index < len(existing_meds)
+        existing_med = existing_meds[edit_index] if is_editing else {}
+
         editor = tk.Toplevel(self.root)
-        editor.title("Add New Medication")
+        editor.title("Edit Medication" if is_editing else "Add New Medication")
         editor.geometry("500x600")
 
         tk.Label(editor, text="Medication Name:", font=("Helvetica", 18)).pack()
         name_entry = tk.Entry(editor, font=("Helvetica", 18))
         name_entry.pack()
+        if is_editing:
+            name_entry.insert(0, existing_med.get("medication_name", ""))
 
         tk.Label(editor, text="Doctor Name:", font=("Helvetica", 18)).pack()
         doctor_entry = tk.Entry(editor, font=("Helvetica", 18))
         doctor_entry.pack()
+        if is_editing:
+            doctor_entry.insert(0, existing_med.get("doctor_name", ""))
 
         tk.Label(editor, text="Date Prescribed:", font=("Helvetica", 18)).pack()
         date_entry = DateEntry(editor, font=("Helvetica", 18), date_pattern="mm-dd-yyyy")
-        date_entry.set_date(datetime.today())
+        if is_editing and existing_med.get("date_prescribed"):
+            try:
+                # Handle different date formats
+                date_str = existing_med.get("date_prescribed")
+                if len(date_str) == 10 and date_str.count('-') == 2:  # YYYY-MM-DD format
+                    parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
+                else:  # MM-DD-YYYY format
+                    parsed_date = datetime.strptime(date_str, "%m-%d-%Y")
+                date_entry.set_date(parsed_date.date())
+            except:
+                date_entry.set_date(datetime.today())
+        else:
+            date_entry.set_date(datetime.today())
         date_entry.pack()
 
         tk.Label(editor, text="Stop After Date (optional):", font=("Helvetica", 18)).pack()
         stop_entry = tk.Entry(editor, justify="center", font=("Helvetica", 18))
         stop_entry.pack()
-        stop_entry.insert(0, "MM-DD-YYYY")
+        
+        # Pre-fill stop date if editing
+        if is_editing and existing_med.get("stop_after_date"):
+            try:
+                stop_date_str = existing_med.get("stop_after_date")
+                if stop_date_str:
+                    # Convert from YYYY-MM-DD to MM-DD-YYYY for display
+                    parsed_date = datetime.strptime(stop_date_str, "%Y-%m-%d")
+                    display_date = parsed_date.strftime("%m-%d-%Y")
+                    stop_entry.insert(0, display_date)
+                else:
+                    stop_entry.insert(0, "MM-DD-YYYY")
+            except:
+                stop_entry.insert(0, "MM-DD-YYYY")
+        else:
+            stop_entry.insert(0, "MM-DD-YYYY")
 
         def clear_placeholder(e):
             if stop_entry.get() == "MM-DD-YYYY":
@@ -401,14 +441,28 @@ class MedicationApp:
         stop_entry.bind("<FocusIn>", clear_placeholder)
 
         tk.Label(editor, text="Dosage Instructions:", font=("Helvetica", 18)).pack()
-        dosage_var = tk.StringVar(value="once per day")
+        dosage_var = tk.StringVar()
         dosage_options = ["once per day", "twice daily", "three times daily"]
+        
+        # Set current value if editing
+        current_dosage = existing_med.get("dosage_instructions", "once per day") if is_editing else "once per day"
+        dosage_var.set(current_dosage)
+        
         dosage_combobox = ttk.Combobox(editor, textvariable=dosage_var, values=dosage_options, state="readonly",
                                     font=("Helvetica", 16))
         dosage_combobox.pack()
 
         tk.Label(editor, text="Select time(s) for doses:", font=("Helvetica", 18)).pack()
-        time_vars = {"7 AM": tk.IntVar(), "Noon": tk.IntVar(), "5 PM": tk.IntVar(), "10 PM": tk.IntVar()}
+        time_vars = {"9 AM": tk.IntVar(), "3:30 PM": tk.IntVar(), "9 PM": tk.IntVar(), "3:30 AM": tk.IntVar()}
+        
+        # Pre-select times if editing
+        if is_editing:
+            existing_times = existing_med.get("scheduled_times", [])
+            time_mapping = {"09:00": "9 AM", "15:30": "3:30 PM", "21:00": "9 PM", "03:30": "3:30 AM"}
+            for time_24, time_label in time_mapping.items():
+                if time_24 in existing_times:
+                    time_vars[time_label].set(1)
+        
         time_frame = tk.Frame(editor)
         time_frame.pack(pady=5)
 
@@ -419,13 +473,15 @@ class MedicationApp:
         tk.Label(editor, text="Quantity on-hand:", font=("Helvetica", 18)).pack()
         stock_entry = tk.Entry(editor, font=("Helvetica", 18))
         stock_entry.pack()
+        if is_editing:
+            stock_entry.insert(0, str(existing_med.get("stock", 0)))
 
         def save_medication():
             scheduled = []
-            if time_vars["7 AM"].get(): scheduled.append("07:00")
-            if time_vars["Noon"].get(): scheduled.append("12:00")
-            if time_vars["5 PM"].get(): scheduled.append("17:00")
-            if time_vars["10 PM"].get(): scheduled.append("22:00")
+            if time_vars["9 AM"].get(): scheduled.append("09:00")
+            if time_vars["3:30 PM"].get(): scheduled.append("15:30")
+            if time_vars["9 PM"].get(): scheduled.append("21:00")
+            if time_vars["3:30 AM"].get(): scheduled.append("03:30")
 
             raw_stop = stop_entry.get().strip()
             stop_after_date = None
@@ -453,7 +509,16 @@ class MedicationApp:
             c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
             raw = c.fetchone()
             data = json.loads(raw[0]) if raw and raw[0] else []
-            data.append(med)
+            
+            if is_editing:
+                # Update existing medication
+                data[edit_index] = med
+                messagebox.showinfo("Success", "Medication updated successfully!")
+            else:
+                # Add new medication
+                data.append(med)
+                messagebox.showinfo("Success", "Medication added successfully!")
+            
             c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", (json.dumps(data), user_id))
             conn.commit()
             conn.close()
@@ -461,7 +526,8 @@ class MedicationApp:
             self.users = self.fetch_users()
             self.show_user_data(self.current_user)
 
-        tk.Button(editor, text="Save Medication", font=("Helvetica", 18), command=save_medication).pack(pady=10)
+        save_text = "Update Medication" if is_editing else "Save Medication"
+        tk.Button(editor, text=save_text, font=("Helvetica", 18), command=save_medication).pack(pady=10)
 
 
     def show_user_data(self, user):
@@ -508,6 +574,12 @@ class MedicationApp:
             button_frame = tk.Frame(frame)
             button_frame.pack(pady=5)
             
+            # ✅ NEW: Add Edit Medication button
+            edit_btn = tk.Button(button_frame, text="Edit Medication", 
+                               command=lambda idx=i: self.open_medication_editor(edit_index=idx),
+                               bg="lightblue")
+            edit_btn.pack(side=tk.LEFT, padx=5)
+            
             stock_btn = tk.Button(button_frame, text="Modify Stock", command=lambda idx=i: self.modify_stock(idx))
             stock_btn.pack(side=tk.LEFT, padx=5)
 
@@ -548,7 +620,7 @@ class MedicationApp:
 
                 today = datetime.today().date()
 
-                # Only alert if days left < 5 AND medication isn’t ending within 5 days
+                # Only alert if days left < 5 AND medication isn't ending within 5 days
                 if days_left < 5 and (not stop_date or (stop_date - today).days > 5):
                     alerts.append(f"{user_name} is running low on {med.get('medication_name')} ({days_left} days left)")
 
@@ -572,18 +644,22 @@ class MedicationApp:
             tk.Button(alert_win, text="Close", font=("Helvetica", 14), command=alert_win.destroy).pack(pady=10)
 
     def delete_medication(self, index):
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        user_id = self.current_user[0]
-        c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
-        data = json.loads(c.fetchone()[0])
-        if 0 <= index < len(data):
-            del data[index]
-            c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", (json.dumps(data), user_id))
-        conn.commit()
-        conn.close()
-        self.users = self.fetch_users()
-        self.show_user_data(self.current_user)
+        # Add confirmation dialog
+        if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this medication?"):
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            user_id = self.current_user[0]
+            c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
+            data = json.loads(c.fetchone()[0])
+            if 0 <= index < len(data):
+                deleted_med = data[index]
+                del data[index]
+                c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", (json.dumps(data), user_id))
+                messagebox.showinfo("Deleted", f"Medication '{deleted_med.get('medication_name', 'Unknown')}' has been deleted.")
+            conn.commit()
+            conn.close()
+            self.users = self.fetch_users()
+            self.show_user_data(self.current_user)
 
     def modify_stock(self, index):
         conn = sqlite3.connect(self.db_path)
@@ -602,75 +678,163 @@ class MedicationApp:
         self.show_user_data(self.current_user)
 
     def start_alert_thread(self):
-        last_reset_day = [datetime.now().date()]  # wrap in list for mutability inside thread
         def check_alerts():
             print("[DEBUG] Alert thread started")
             while True:
-                now = datetime.now()
-                now_str = now.strftime("%H:%M")
-                today_key = now.strftime("%Y-%m-%d")
+                try:
+                    now = datetime.now()
+                    today_key = now.strftime("%Y-%m-%d")
+                    
+                    # Reset alerted_today at midnight
+                    current_date = now.date()
+                    if not hasattr(self, '_last_reset_date') or self._last_reset_date != current_date:
+                        alerted_today.clear()
+                        self._last_reset_date = current_date
+                        print(f"[DEBUG] Reset daily alerts for {current_date}")
 
-                self.users = self.fetch_users()
-                for user in self.users:
-                    user_id, fname, _, med_data_json = user
+                    # Fetch fresh user data
                     try:
-                        meds = json.loads(med_data_json)
-                    except:
+                        self.users = self.fetch_users()
+                    except Exception as e:
+                        print(f"[DEBUG] Error fetching users: {e}")
+                        time.sleep(60)
                         continue
-                    for idx, med in enumerate(meds):
-                        times = med.get("scheduled_times", [])
-                        for t in times:
-                            try:
-                                med_time = datetime.strptime(t, "%H:%M").replace(year=now.year, month=now.month, day=now.day)
-                                delta = abs((now - med_time).total_seconds())
-                                key = f"{today_key}-{user_id}-{idx}-{t}"
-                                if delta < 61 and key not in alerted_today:
-                                    print(f"[DEBUG] Alert match: {fname} - {med['medication_name']} at {t}")
-                                    self.root.after(0, self.trigger_alert, med, fname, user_id, idx, key)
-                            except Exception as e:
-                                print(f"[DEBUG] Error parsing time '{t}':", e)
-                time.sleep(60)
 
+                    for user in self.users:
+                        user_id, fname, _, med_data_json = user
+                        try:
+                            meds = json.loads(med_data_json) if med_data_json else []
+                        except Exception as e:
+                            print(f"[DEBUG] Error parsing medication data for user {fname}: {e}")
+                            continue
+                            
+                        for idx, med in enumerate(meds):
+                            # Check if medication should still be active
+                            stop_date_str = med.get("stop_after_date")
+                            if stop_date_str:
+                                try:
+                                    stop_date = datetime.strptime(stop_date_str, "%Y-%m-%d").date()
+                                    if current_date > stop_date:
+                                        continue  # Skip expired medications
+                                except Exception as e:
+                                    print(f"[DEBUG] Error parsing stop date: {e}")
+                            
+                            times = med.get("scheduled_times", [])
+                            for t in times:
+                                try:
+                                    med_time = datetime.strptime(t, "%H:%M").replace(
+                                        year=now.year, month=now.month, day=now.day
+                                    )
+                                    delta = abs((now - med_time).total_seconds())
+                                    key = f"{today_key}-{user_id}-{idx}-{t}"
+                                    
+                                    # Alert within 1 minute window and not already alerted today
+                                    if delta <= 60 and key not in alerted_today:
+                                        print(f"[DEBUG] Alert triggered: {fname} - {med.get('medication_name', 'Unknown')} at {t}")
+                                        # Use thread-safe method to update GUI
+                                        self.root.after(0, self.trigger_alert, med, fname, user_id, idx, key)
+                                        
+                                except Exception as e:
+                                    print(f"[DEBUG] Error processing scheduled time '{t}': {e}")
+                    
+                except Exception as e:
+                    print(f"[DEBUG] Unexpected error in alert thread: {e}")
+                
+                # Sleep for 30 seconds instead of 60 for more responsive alerts
+                time.sleep(30)
 
-        threading.Thread(target=check_alerts, daemon=True).start()
+        # Start the background thread as a daemon so it stops when main program exits
+        alert_thread = threading.Thread(target=check_alerts, daemon=True)
+        alert_thread.start()
+        print("[DEBUG] Alert monitoring thread started")
 
     def trigger_alert(self, med, user_fname, user_id, med_index, alert_key):
-        play_alert_sound()
+        """Display medication alert popup"""
+        try:
+            play_alert_sound()
 
-        alert = tk.Toplevel(self.root)
-        alert.title("Medication Alert")
-        alert.geometry("300x300")
-        alert.attributes("-topmost", True)
-        alert.lift()
+            alert = tk.Toplevel(self.root)
+            alert.title("Medication Alert")
+            alert.geometry("300x300")
+            alert.attributes("-topmost", True)
+            alert.lift()
 
-        offset_x = 50 * (len(alerted_today) % 5)
-        offset_y = 50 * (len(alerted_today) // 5)
-        x = self.root.winfo_x() + offset_x
-        y = self.root.winfo_y() + offset_y
-        alert.geometry(f"300x300+{x}+{y}")
+            # Offset multiple alerts so they don't overlap
+            offset_x = 50 * (len(alerted_today) % 5)
+            offset_y = 50 * (len(alerted_today) // 5)
+            x = self.root.winfo_x() + offset_x
+            y = self.root.winfo_y() + offset_y
+            alert.geometry(f"300x300+{x}+{y}")
 
-        tk.Label(alert, text=f"Time for {user_fname} to take:", font=("Helvetica", 20)).pack(pady=10)
-        tk.Label(alert, text=med['medication_name'], font=("Helvetica", 20, "bold")).pack(pady=10)
-        tk.Label(alert, text=med.get('dosage_instructions', ""), wraplength=250).pack(pady=5)
+            # Alert content
+            tk.Label(alert, text=f"Time for {user_fname} to take:", 
+                    font=("Helvetica", 20)).pack(pady=10)
+            tk.Label(alert, text=med.get('medication_name', 'Unknown Medication'), 
+                    font=("Helvetica", 20, "bold")).pack(pady=10)
+            tk.Label(alert, text=med.get('dosage_instructions', ""), 
+                    wraplength=250).pack(pady=5)
 
-        def taken():
-            conn = sqlite3.connect(self.db_path)
-            c = conn.cursor()
-            c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
-            meds = json.loads(c.fetchone()[0])
-            if 0 <= med_index < len(meds):
-                meds[med_index]['stock'] = max(0, meds[med_index].get('stock', 0) - 1)
-                c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", (json.dumps(meds), user_id))
-            conn.commit()
-            conn.close()
-            alert.destroy()
+            def taken():
+                """Handle when user marks medication as taken"""
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    c = conn.cursor()
+                    c.execute("SELECT medication_data FROM users WHERE user_id = ?", (user_id,))
+                    result = c.fetchone()
+                    if result and result[0]:
+                        meds = json.loads(result[0])
+                        if 0 <= med_index < len(meds):
+                            current_stock = meds[med_index].get('stock', 0)
+                            meds[med_index]['stock'] = max(0, current_stock - 1)
+                            c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", 
+                                    (json.dumps(meds), user_id))
+                            conn.commit()
+                    conn.close()
+                    alert.destroy()
+                except Exception as e:
+                    print(f"Error updating medication stock: {e}")
+                    alert.destroy()
 
-        tk.Button(alert, text="Taken", command=taken).pack(pady=5)
-        tk.Button(alert, text="Skip", command=lambda: [alerted_today.add(alert_key), alert.destroy()]).pack(pady=5)
-        alerted_today.add(alert_key)
+            def skip():
+                """Handle when user skips the medication"""
+                alerted_today.add(alert_key)
+                alert.destroy()
+
+            # Buttons
+            button_frame = tk.Frame(alert)
+            button_frame.pack(pady=10)
+            
+            tk.Button(button_frame, text="Taken", command=taken, 
+                     font=("Helvetica", 14)).pack(side=tk.LEFT, padx=10)
+            tk.Button(button_frame, text="Skip", command=skip,
+                     font=("Helvetica", 14)).pack(side=tk.LEFT, padx=10)
+            
+            # Mark as alerted
+            alerted_today.add(alert_key)
+            
+        except Exception as e:
+            print(f"Error creating medication alert: {e}")
+
+
+def main():
+    """Main function to start the application"""
+    try:
+        # Initialize database tables
+        setup_tables()
+        
+        # Create the main window
+        root = tk.Tk()
+        
+        # Create the application instance
+        app = MedicationApp(root)
+        
+        # Start the GUI event loop
+        root.mainloop()
+        
+    except Exception as e:
+        print(f"Error starting application: {e}")
+        messagebox.showerror("Application Error", f"Failed to start application:\n{str(e)}")
+
 
 if __name__ == "__main__":
-    setup_tables()
-    root = tk.Tk()
-    app = MedicationApp(root)
-    root.mainloop()
+    main()
