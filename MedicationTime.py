@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
+from PIL import Image, ImageTk
+from PIL.Image import Resampling
 import sqlite3
 import json
 from datetime import datetime, timedelta
@@ -91,8 +93,24 @@ class MedicationApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Yates Family Medication Schedule,         Select a family member to begin.")
-        self.root.geometry("600x850")
+        self.root.iconbitmap("Med_Time_Icon.ico")
+        self.root.geometry("600x850")        
 
+        # Load and resize background image
+        if os.path.exists("background.jpg"):
+            bg_image = Image.open("background.jpg")
+            bg_image = bg_image.resize((600, 850), Image.Resampling.LANCZOS)
+            bg_photo = ImageTk.PhotoImage(bg_image)
+
+            # Create background label
+            bg_label = tk.Label(root, image=bg_photo)
+            bg_label.image = bg_photo  # keep a reference!
+            bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        # Use a frame with transparent widgets or light background for clarity
+        main_frame = tk.Frame(root, bg="#ffffff", bd=2)
+        main_frame.place(relx=0.5, rely=0.02, anchor='n')
+        
         self.db_path = DB_PATH
         self.users = self.fetch_users()
         self.volume_level = tk.DoubleVar(value=settings.get("volume", 0.5))
@@ -102,18 +120,19 @@ class MedicationApp:
         self.create_widgets()
         self.start_alert_thread()
 
+        
     def create_widgets(self):
         title_label = tk.Label(self.root, text="Medication Time", font=("Helvetica", 20, "bold"))
         title_label.pack(pady=10)
 
         volume_frame = tk.Frame(self.root)
         volume_frame.pack(side=tk.TOP, pady=5)
-        tk.Label(volume_frame, text="Alert Volume").pack(side=tk.LEFT)
+        tk.Label(volume_frame, text="Alert Volume", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
         volume_slider = tk.Scale(volume_frame, from_=0, to=1, resolution=0.05,
                                 orient=tk.HORIZONTAL, variable=self.volume_level,
                                 command=self.set_volume)
         volume_slider.pack(side=tk.LEFT)
-        tk.Button(volume_frame, text="Test Sound", command=play_alert_sound).pack(side=tk.LEFT, padx=10)
+        tk.Button(volume_frame, text="Test Sound", font=("Helvetica", 12, "bold"), command=play_alert_sound).pack(side=tk.LEFT, padx=10)
 
         button_frame = tk.Frame(self.root)
         button_frame.pack()
@@ -139,7 +158,7 @@ class MedicationApp:
 
         search_frame = tk.Frame(self.root)
         search_frame.pack(pady=5)
-        tk.Label(search_frame, text="Search Medications:").pack(side=tk.LEFT)
+        tk.Label(search_frame, text="Search Medications:", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
         search_entry = tk.Entry(search_frame, textvariable=self.filter_text)
         search_entry.pack(side=tk.LEFT)
         search_entry.bind("<KeyRelease>", lambda event: self.show_user_data(self.current_user))
@@ -204,7 +223,7 @@ class MedicationApp:
         entry_win.title("Journal Entry")
         entry_win.geometry("400x300")
 
-        tk.Label(entry_win, text="How are you feeling today?").pack(pady=5)
+        tk.Label(entry_win, text="How are you feeling today?", font=("Helvetica", 12, "bold")).pack(pady=5)
 
         text_box = tk.Text(entry_win, height=10, wrap=tk.WORD)
         text_box.pack(expand=True, fill=tk.BOTH, padx=10, pady=5)
@@ -223,7 +242,7 @@ class MedicationApp:
             else:
                 messagebox.showwarning("Empty Entry", "Please enter some text before saving.")
 
-        tk.Button(entry_win, text="Save Entry", command=save_entry).pack(pady=10)
+        tk.Button(entry_win, text="Save Entry", font=("Helvetica", 12, "bold"), command=save_entry).pack(pady=10)
 
 
     def view_journals(self):
@@ -235,12 +254,12 @@ class MedicationApp:
         window.title("View Journal Entries")
         window.geometry("400x600")
 
-        tk.Label(window, text="Start Date:").pack()
+        tk.Label(window, text="Start Date:", font=("Helvetica", 12, "bold")).pack()
         start_date = DateEntry(window)
         start_date.set_date(datetime.now() - timedelta(days=30))
         start_date.pack()
 
-        tk.Label(window, text="End Date:").pack()
+        tk.Label(window, text="End Date:", font=("Helvetica", 12, "bold")).pack()
         end_date = DateEntry(window)
         end_date.set_date(datetime.now())
         end_date.pack()
@@ -352,6 +371,7 @@ class MedicationApp:
                     subprocess.run(["xdg-open", file_path])
             except Exception as e:
                 print(f"Could not open PDF automatically: {e}")
+
 
 
         button_frame = tk.Frame(window)
