@@ -420,7 +420,7 @@ class MedicationApp:
                 write_line(f"Medication: {m.get('medication_name', 'N/A')}", 12, bold=True)
                 write_line(f"Prescribed by: {m.get('doctor_name', 'N/A')}")
                 write_line(f"Date Prescribed: {m.get('date_prescribed', 'N/A')}")
-                #write_line(f"Dosage Instructions: {m.get('dosage_instructions', 'N/A')}")  # ✅ Added this line
+                write_line(f"Dosage Instructions: {m.get('dosage_instructions', 'N/A')}")  # ✅ Added this line
                 write_line(f"Instructions: {m.get('dosage_instructions', 'N/A')}")
                 write_line("")
 
@@ -961,7 +961,7 @@ class MedicationApp:
 
             # FIXED: Better offset calculation for multiple user alerts
             # Use the current count of active alerts to offset horizontally by 300 pixels
-            offset_x = self.active_alert_count * 520
+            offset_x = self.active_alert_count * 300
             offset_y = 50  # Small vertical offset to avoid title bar overlap
             x = self.root.winfo_x() + offset_x
             y = self.root.winfo_y() + offset_y
