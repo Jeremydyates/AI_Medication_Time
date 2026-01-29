@@ -164,7 +164,7 @@ class MedicationApp:
     def __init__(self, root):
             self.root = root
             self.root.title("Yates Family Medication Schedule,         Select a family member to begin.")
-            self.root.iconbitmap("Med_Time_Icon.ico")
+            #self.root.iconbitmap("Med_Time_Icon.ico")
             self.root.geometry("600x850")        
             
             # Add this line to track active alert windows

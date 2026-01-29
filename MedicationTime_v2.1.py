@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from tkcalendar import DateEntry
 import threading
 import time
-import pygame  # <-- Import pygame for playing MP3
 import os
 from fpdf import FPDF
 import platform
@@ -17,6 +16,10 @@ import subprocess
 DB_PATH = 'medication_time_db.db'
 SETTINGS_PATH = 'settings.json'
 alerted_today = set()
+
+# ✅ NEW: MP4 folder and current index tracking
+MP4_FOLDER = 'C:\Medication Time\mp4'
+current_mp4_index = 0  # Track which MP4 to play next
 
 # ---------- Setup Database Tables ----------
 def setup_tables():
@@ -66,27 +69,86 @@ def setup_tables():
 def load_settings():
     if os.path.exists(SETTINGS_PATH):
         with open(SETTINGS_PATH, 'r') as f:
-            return json.load(f)
-    return {"volume": 0.5}
+            data = json.load(f)
+            # ✅ NEW: Load the saved MP4 index and inventory alert mute status
+            global current_mp4_index
+            current_mp4_index = data.get("mp4_index", 0)
+            return data
+    return {"volume": 0.5, "mp4_index": 0, "mute_inventory_alerts": False}
 
 def save_settings(settings):
     with open(SETTINGS_PATH, 'w') as f:
         json.dump(settings, f)
 
-# ---------- Initialize Audio Playback ----------
-settings = load_settings()
-pygame.mixer.init()
-pygame.mixer.music.set_volume(settings.get("volume", 0.5))
-
-def play_alert_sound():
+# ✅ NEW: Function to get list of MP4 files in sequential order
+def get_mp4_files():
+    """Get sorted list of MP4 files from the mp4 folder"""
+    if not os.path.exists(MP4_FOLDER):
+        os.makedirs(MP4_FOLDER)
+        print(f"[INFO] Created '{MP4_FOLDER}' folder for alert videos")
+        return []
+    
     try:
-        if os.path.exists("MedicationTime.mp3"):
-            pygame.mixer.music.load("MedicationTime.mp3")
-            pygame.mixer.music.play()
-        else:
-            print("MedicationTime.mp3 file not found.")
+        # Get all .mp4 files and sort them
+        mp4_files = [f for f in os.listdir(MP4_FOLDER) if f.lower().endswith('.mp4')]
+        mp4_files.sort()  # Sort alphabetically
+        return mp4_files
     except Exception as e:
-        print("Error playing sound:", e)
+        print(f"[ERROR] Could not read mp4 folder: {e}")
+        return []
+
+# ✅ NEW: Function to play MP4 video files
+def play_alert_video():
+    """Play the next MP4 file in sequence from the mp4 folder"""
+    global current_mp4_index
+    
+    try:
+        mp4_files = get_mp4_files()
+        
+        if not mp4_files:
+            print(f"[WARNING] No MP4 files found in '{MP4_FOLDER}' folder")
+            return
+        
+        # Wrap around to start if we've reached the end
+        if current_mp4_index >= len(mp4_files):
+            current_mp4_index = 0
+        
+        # Get the current MP4 file
+        current_mp4 = mp4_files[current_mp4_index]
+        mp4_path = os.path.join(MP4_FOLDER, current_mp4)
+        
+        print(f"[INFO] Playing alert video {current_mp4_index + 1}/{len(mp4_files)}: {current_mp4}")
+        
+        # Play the video based on platform
+        if platform.system() == "Windows":
+            # Windows: Use default video player
+            os.startfile(mp4_path)
+        elif platform.system() == "Darwin":
+            # macOS: Use QuickTime or default player
+            subprocess.Popen(["open", mp4_path])
+        else:
+            # Linux: Try common video players
+            try:
+                subprocess.Popen(["xdg-open", mp4_path])
+            except:
+                try:
+                    subprocess.Popen(["vlc", "--play-and-exit", mp4_path])
+                except:
+                    print("[ERROR] Could not find suitable video player")
+        
+        # Move to next file for next alert
+        current_mp4_index += 1
+        
+        # Save the updated index
+        settings = load_settings()
+        settings["mp4_index"] = current_mp4_index
+        save_settings(settings)
+        
+    except Exception as e:
+        print(f"[ERROR] Error playing video: {e}")
+
+# ---------- Initialize Settings ----------
+settings = load_settings()
 
 # ---------- Helper Functions for Extended Dosage Logic ----------
 def should_alert_today(med, current_date):
@@ -164,7 +226,7 @@ class MedicationApp:
     def __init__(self, root):
             self.root = root
             self.root.title("Yates Family Medication Schedule,         Select a family member to begin.")
-            self.root.iconbitmap("Med_Time_Icon.ico")
+            #self.root.iconbitmap("Med_Time_Icon.ico")
             self.root.geometry("600x850")        
             
             # Add this line to track active alert windows
@@ -189,9 +251,11 @@ class MedicationApp:
             
             self.db_path = DB_PATH
             self.users = self.fetch_users()
-            self.volume_level = tk.DoubleVar(value=settings.get("volume", 0.5))
             self.filter_text = tk.StringVar()
             self.current_user = None
+            
+            # ✅ NEW: Track inventory alert mute status
+            self.mute_inventory_alerts = tk.BooleanVar(value=settings.get("mute_inventory_alerts", False))
 
             self.create_widgets()
             self.start_alert_thread()
@@ -201,14 +265,24 @@ class MedicationApp:
         title_label = tk.Label(self.root, text="Medication Time", font=("Helvetica", 20, "bold"))
         title_label.pack(pady=10)
 
-        volume_frame = tk.Frame(self.root)
-        volume_frame.pack(side=tk.TOP, pady=5)
-        tk.Label(volume_frame, text="Alert Volume", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
-        volume_slider = tk.Scale(volume_frame, from_=0, to=1, resolution=0.05,
-                                orient=tk.HORIZONTAL, variable=self.volume_level,
-                                command=self.set_volume)
-        volume_slider.pack(side=tk.LEFT)
-        tk.Button(volume_frame, text="Test Sound", font=("Helvetica", 12, "bold"), command=play_alert_sound).pack(side=tk.LEFT, padx=10)
+        # ✅ MODIFIED: Control frame with test button and mute toggle
+        control_frame = tk.Frame(self.root)
+        control_frame.pack(side=tk.TOP, pady=5)
+        
+        tk.Button(control_frame, text="Test Alert", font=("Helvetica", 12, "bold"), 
+                 command=play_alert_video).pack(side=tk.LEFT, padx=10)
+        
+        # ✅ NEW: Mute inventory alerts toggle
+        mute_check = tk.Checkbutton(control_frame, text="Mute Low Stock Alerts", 
+                                     variable=self.mute_inventory_alerts,
+                                     command=self.toggle_inventory_alerts,
+                                     font=("Helvetica", 12, "bold"))
+        mute_check.pack(side=tk.LEFT, padx=10)
+        
+        # ✅ NEW: Add MP4 status label
+        self.mp4_status_label = tk.Label(control_frame, text="", font=("Helvetica", 10), fg="blue")
+        self.mp4_status_label.pack(side=tk.LEFT, padx=10)
+        self.update_mp4_status()
 
         button_frame = tk.Frame(self.root)
         button_frame.pack()
@@ -269,6 +343,27 @@ class MedicationApp:
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
 
+    # ✅ NEW: Toggle inventory alerts and save to settings
+    def toggle_inventory_alerts(self):
+        """Toggle the mute status for inventory alerts and save to settings"""
+        mute_status = self.mute_inventory_alerts.get()
+        settings = load_settings()
+        settings["mute_inventory_alerts"] = mute_status
+        save_settings(settings)
+        
+        status_text = "muted" if mute_status else "enabled"
+        print(f"[INFO] Low stock alerts {status_text}")
+
+    # ✅ NEW: Method to update MP4 status display
+    def update_mp4_status(self):
+        """Update the display showing current MP4 status"""
+        mp4_files = get_mp4_files()
+        if mp4_files:
+            status_text = f"Next alert: {current_mp4_index + 1}/{len(mp4_files)}"
+        else:
+            status_text = f"No MP4 files in '{MP4_FOLDER}' folder"
+        self.mp4_status_label.config(text=status_text)
+
     def _on_mousewheel(self, event):
         if event.num == 4:   # Linux scroll up
             self.canvas.yview_scroll(-1, "units")
@@ -276,11 +371,6 @@ class MedicationApp:
             self.canvas.yview_scroll(1, "units")
         else:  # Windows and Mac
             self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-
-    def set_volume(self, value):
-        volume = float(value)
-        pygame.mixer.music.set_volume(volume)
-        save_settings({"volume": volume})
 
     def fetch_users(self):
         conn = sqlite3.connect(self.db_path)
@@ -420,7 +510,6 @@ class MedicationApp:
                 write_line(f"Medication: {m.get('medication_name', 'N/A')}", 12, bold=True)
                 write_line(f"Prescribed by: {m.get('doctor_name', 'N/A')}")
                 write_line(f"Date Prescribed: {m.get('date_prescribed', 'N/A')}")
-                write_line(f"Dosage Instructions: {m.get('dosage_instructions', 'N/A')}")  # ✅ Added this line
                 write_line(f"Instructions: {m.get('dosage_instructions', 'N/A')}")
                 write_line("")
 
@@ -539,7 +628,6 @@ class MedicationApp:
 
         tk.Label(editor, text="Dosage Instructions:", font=("Helvetica", 18)).pack()
         dosage_var = tk.StringVar()
-        # ✅ MODIFIED: Extended dosage options
         dosage_options = [
             "once per day", 
             "twice daily", 
@@ -598,13 +686,12 @@ class MedicationApp:
                     messagebox.showerror("Invalid Date", "Please enter Stop After Date in MM-DD-YYYY format.")
                     return
 
-            # ✅ FIXED: Store prescribed date in YYYY-MM-DD format for consistency
             prescribed_date = date_entry.get_date().isoformat()
 
             med = {
                 "medication_name": name_entry.get(),
                 "doctor_name": doctor_entry.get(),
-                "date_prescribed": prescribed_date,  # Store in YYYY-MM-DD format
+                "date_prescribed": prescribed_date,
                 "stop_after_date": stop_after_date,
                 "dosage_instructions": dosage_var.get(),
                 "stock": int(stock_entry.get() or 0),
@@ -619,11 +706,9 @@ class MedicationApp:
             data = json.loads(raw[0]) if raw and raw[0] else []
             
             if is_editing:
-                # Update existing medication
                 data[edit_index] = med
                 messagebox.showinfo("Success", "Medication updated successfully!")
             else:
-                # Add new medication
                 data.append(med)
                 messagebox.showinfo("Success", "Medication added successfully!")
             
@@ -632,10 +717,8 @@ class MedicationApp:
             conn.close()
             editor.destroy()
             
-            # ✅ REFRESH: Fetch updated data and refresh display
             self.users = self.fetch_users()
             if self.current_user:
-                # Find the updated user data
                 updated_user = next((u for u in self.users if u[0] == self.current_user[0]), self.current_user)
                 self.show_user_data(updated_user)
 
@@ -653,7 +736,6 @@ class MedicationApp:
 
         meds = json.loads(user[3])
         
-        # Centered container
         container = tk.Frame(self.scrollable_frame)
         container.pack(anchor="center", pady=10)
 
@@ -676,32 +758,28 @@ class MedicationApp:
             if filter_val and filter_val not in m.get("medication_name", "").lower():
                 continue
 
-            # ✅ IMPROVED: Better display formatting with date conversion
             display_med = {}
             for k, v in m.items():
                 if k == "date_prescribed" and v:
-                    # Convert YYYY-MM-DD to MM-DD-YYYY for display
                     try:
                         if len(v) == 10 and v.count('-') == 2:
                             parts = v.split('-')
-                            if len(parts[0]) == 4:  # YYYY-MM-DD format
+                            if len(parts[0]) == 4:
                                 date_obj = datetime.strptime(v, "%Y-%m-%d")
                                 display_med[k] = date_obj.strftime("%m-%d-%Y")
-                            else:  # Already MM-DD-YYYY
+                            else:
                                 display_med[k] = v
                         else:
                             display_med[k] = v
                     except:
                         display_med[k] = v
                 elif k == "stop_after_date" and v:
-                    # Convert YYYY-MM-DD to MM-DD-YYYY for display
                     try:
                         date_obj = datetime.strptime(v, "%Y-%m-%d")
                         display_med[k] = date_obj.strftime("%m-%d-%Y")
                     except:
                         display_med[k] = v
                 elif k == "scheduled_times" and isinstance(v, list):
-                    # Convert 24-hour times to 12-hour format for display
                     time_display = []
                     for time_str in v:
                         try:
@@ -717,7 +795,7 @@ class MedicationApp:
             med_text = "\n".join([
                 f"{label_map.get(k, k)}: {v}"
                 for k, v in display_med.items()
-                if k in label_map  # Only show mapped fields
+                if k in label_map
             ])
 
             frame = tk.Frame(container, borderwidth=1, relief="solid", padx=10, pady=5)
@@ -726,7 +804,6 @@ class MedicationApp:
             button_frame = tk.Frame(frame)
             button_frame.pack(pady=5)
             
-            # ✅ NEW: Add Edit Medication button
             edit_btn = tk.Button(button_frame, text="Edit Medication", 
                                command=lambda idx=i: self.open_medication_editor(edit_index=idx),
                                bg="lightblue")
@@ -742,6 +819,11 @@ class MedicationApp:
         self.check_stock_levels()    
 
     def check_stock_levels(self):
+        # ✅ MODIFIED: Check if inventory alerts are muted
+        if self.mute_inventory_alerts.get():
+            print("[INFO] Low stock alerts are muted")
+            return
+            
         alerts = []
 
         for user in self.users:
@@ -757,7 +839,6 @@ class MedicationApp:
                 scheduled_times = med.get("scheduled_times", [])
                 dosage_instructions = med.get("dosage_instructions", "once per day")
 
-                # ✅ MODIFIED: Use new calculation function
                 days_left = calculate_days_supply(stock, dosage_instructions, scheduled_times)
 
                 stop_date_str = med.get("stop_after_date")
@@ -770,7 +851,6 @@ class MedicationApp:
 
                 today = datetime.today().date()
 
-                # Only alert if days left < 5 AND medication isn't ending within 5 days
                 if days_left < 5 and (not stop_date or (stop_date - today).days > 5):
                     alerts.append(f"{user_name} is running low on {med.get('medication_name')} ({days_left} days left)")
 
@@ -794,7 +874,6 @@ class MedicationApp:
             tk.Button(alert_win, text="Close", font=("Helvetica", 14), command=alert_win.destroy).pack(pady=10)
 
     def delete_medication(self, index):
-        # Add confirmation dialog
         if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this medication?"):
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
@@ -836,13 +915,11 @@ class MedicationApp:
                     today_key = now.strftime("%Y-%m-%d")
                     current_date = now.date()
                     
-                    # Reset alerted_today at midnight
                     if not hasattr(self, '_last_reset_date') or self._last_reset_date != current_date:
                         alerted_today.clear()
                         self._last_reset_date = current_date
                         print(f"[DEBUG] Reset daily alerts for {current_date}")
 
-                    # Fetch fresh user data
                     try:
                         self.users = self.fetch_users()
                     except Exception as e:
@@ -850,8 +927,7 @@ class MedicationApp:
                         time.sleep(60)
                         continue
 
-                    # ✅ NEW: Group medications by user and time
-                    user_time_meds = {}  # {(user_id, time): [(med, med_index), ...]}
+                    user_time_meds = {}
                     
                     for user in self.users:
                         user_id, fname, lname, med_data_json = user
@@ -862,17 +938,15 @@ class MedicationApp:
                             continue
                             
                         for idx, med in enumerate(meds):
-                            # Check if medication should still be active
                             stop_date_str = med.get("stop_after_date")
                             if stop_date_str:
                                 try:
                                     stop_date = datetime.strptime(stop_date_str, "%Y-%m-%d").date()
                                     if current_date > stop_date:
-                                        continue  # Skip expired medications
+                                        continue
                                 except Exception as e:
                                     print(f"[DEBUG] Error parsing stop date: {e}")
                             
-                            # ✅ IMPROVED: Check if medication should alert today based on dosage frequency
                             if not should_alert_today(med, current_date):
                                 print(f"[DEBUG] Skipping {med.get('medication_name', 'Unknown')} - not scheduled for today")
                                 continue
@@ -885,13 +959,11 @@ class MedicationApp:
                                     )
                                     delta = abs((now - med_time).total_seconds())
                                     
-                                    # Check if within 1 minute window
                                     if delta <= 60:
                                         key = (user_id, t)
                                         if key not in user_time_meds:
                                             user_time_meds[key] = []
                                         
-                                        # Check if this specific medication hasn't been alerted today
                                         alert_key = f"{today_key}-{user_id}-{idx}-{t}"
                                         if alert_key not in alerted_today:
                                             user_time_meds[key].append((med, idx, alert_key, fname, lname))
@@ -899,19 +971,16 @@ class MedicationApp:
                                 except Exception as e:
                                     print(f"[DEBUG] Error processing scheduled time '{t}': {e}")
                     
-                    # ✅ NEW: Trigger combined alerts for each user/time combination
                     for (user_id, time_str), med_list in user_time_meds.items():
-                        if med_list:  # Only create alert if there are medications to show
+                        if med_list:
                             print(f"[DEBUG] Combined alert triggered: User {user_id} at {time_str} with {len(med_list)} medications")
                             self.root.after(0, self.trigger_combined_alert, user_id, time_str, med_list)
                     
                 except Exception as e:
                     print(f"[DEBUG] Unexpected error in alert thread: {e}")
                 
-                # Sleep for 30 seconds instead of 60 for more responsive alerts
                 time.sleep(30)
 
-        # Start the background thread as a daemon so it stops when main program exits
         alert_thread = threading.Thread(target=check_alerts, daemon=True)
         alert_thread.start()
         print("[DEBUG] Alert monitoring thread started")
@@ -919,7 +988,6 @@ class MedicationApp:
     def trigger_combined_alert(self, user_id, time_str, med_list):
         """Display combined medication alert popup for multiple medications at the same time"""
         try:
-            # ✅ SAFETY CHECK: Don't create alert if user already has one
             if user_id in self.active_user_alerts:
                 existing_alert = self.active_user_alerts[user_id]
                 try:
@@ -927,52 +995,46 @@ class MedicationApp:
                         print(f"[DEBUG] Prevented duplicate alert for user {user_id} - alert already exists")
                         return
                     else:
-                        # Clean up stale reference
                         del self.active_user_alerts[user_id]
                 except:
-                    # Window doesn't exist, clean up
                     del self.active_user_alerts[user_id]
             
-            play_alert_sound()
+            # ✅ MODIFIED: Play sequential MP4 instead of MP3
+            play_alert_video()
+            
+            # ✅ NEW: Update MP4 status after playing
+            self.update_mp4_status()
 
             alert = tk.Toplevel(self.root)
             alert.title("Medication Alert")
             
-            # ✅ REGISTER: This alert for the user IMMEDIATELY
             self.active_user_alerts[user_id] = alert
             
-            # Dynamic sizing based on number of medications
             base_height = 150
             button_height = 100
             
-            # Determine if we need scrolling
             needs_scrolling = len(med_list) >= 1
             
             if needs_scrolling:
-                med_display_height = 350  # Fixed height for scrollable area
+                med_display_height = 350
                 total_height = base_height + med_display_height + button_height
             else:
-                med_height = len(med_list) * 80  # Approximate height per medication
+                med_height = len(med_list) * 80
                 total_height = base_height + med_height + button_height
             
             alert.geometry(f"500x{total_height}")
             alert.attributes("-topmost", True)
             alert.lift()
 
-            # FIXED: Better offset calculation for multiple user alerts
-            # Use the current count of active alerts to offset horizontally by 300 pixels
-            offset_x = self.active_alert_count * 300
-            offset_y = 50  # Small vertical offset to avoid title bar overlap
+            offset_x = self.active_alert_count * 520
+            offset_y = 50
             x = self.root.winfo_x() + offset_x
             y = self.root.winfo_y() + offset_y
             alert.geometry(f"500x{total_height}+{x}+{y}")
             
-            # Increment active alert count
             self.active_alert_count += 1
 
-            # Header
-            user_name = f"{med_list[0][3]} {med_list[0][4]}"  # fname, lname from first medication
-            # Convert 24-hour time to 12-hour format for display
+            user_name = f"{med_list[0][3]} {med_list[0][4]}"
             try:
                 time_obj = datetime.strptime(time_str, "%H:%M")
                 display_time = time_obj.strftime("%I:%M %p").lstrip('0')
@@ -986,33 +1048,27 @@ class MedicationApp:
             tk.Label(alert, text=header_text, 
                     font=("Helvetica", 16, "bold"), wraplength=450).pack(pady=10)
 
-            # Create medication container - scrollable if 5+ medications
             if needs_scrolling:
-                # Create frame for canvas and scrollbar
                 scroll_container = tk.Frame(alert)
                 scroll_container.pack(fill="both", expand=True, padx=10, pady=5)
                 
-                # Create canvas and scrollbar
                 canvas = tk.Canvas(scroll_container, height=med_display_height, highlightthickness=0)
                 scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
                 scrollable_frame = tk.Frame(canvas)
                 
-                # Configure scrolling
                 def configure_scrollregion(event):
                     canvas.configure(scrollregion=canvas.bbox("all"))
                 
                 def on_mousewheel_alert(event):
-                    # Handle cross-platform mouse wheel scrolling
-                    if event.num == 4:   # Linux scroll up
+                    if event.num == 4:
                         canvas.yview_scroll(-1, "units")
-                    elif event.num == 5: # Linux scroll down
+                    elif event.num == 5:
                         canvas.yview_scroll(1, "units")
-                    else:  # Windows and Mac
+                    else:
                         canvas.yview_scroll(int(-1*(event.delta/120)), "units")
                 
                 scrollable_frame.bind("<Configure>", configure_scrollregion)
                 
-                # Bind mouse wheel events to canvas and scrollable_frame for better coverage
                 canvas.bind("<MouseWheel>", on_mousewheel_alert)
                 canvas.bind("<Button-4>", on_mousewheel_alert)
                 canvas.bind("<Button-5>", on_mousewheel_alert)
@@ -1020,22 +1076,17 @@ class MedicationApp:
                 scrollable_frame.bind("<Button-4>", on_mousewheel_alert)
                 scrollable_frame.bind("<Button-5>", on_mousewheel_alert)
                 
-                # Also bind to the alert window itself for comprehensive scroll support
                 alert.bind("<MouseWheel>", on_mousewheel_alert)
                 alert.bind("<Button-4>", on_mousewheel_alert)
                 alert.bind("<Button-5>", on_mousewheel_alert)
                 
-                # Create window in canvas
                 canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
                 
-                # Configure canvas scrolling
                 canvas.configure(yscrollcommand=scrollbar.set)
                 
-                # Pack canvas and scrollbar
                 canvas.pack(side="left", fill="both", expand=True)
                 scrollbar.pack(side="right", fill="y")
                 
-                # Configure canvas window width to match canvas
                 def configure_canvas_window(event):
                     canvas.itemconfig(canvas_window, width=canvas.winfo_width())
                 canvas.bind("<Configure>", configure_canvas_window)
@@ -1044,24 +1095,19 @@ class MedicationApp:
                 
                 print(f"[DEBUG] Created scrollable container for {len(med_list)} medications")
             else:
-                # Regular container for fewer medications
                 med_container = tk.Frame(alert)
                 med_container.pack(fill="both", expand=True, padx=10, pady=5)
 
-            # Track medication states
-            med_states = {}  # {med_index: {'taken': BooleanVar, 'skipped': BooleanVar}}
+            med_states = {}
             
-            # Create medication entries
             for i, (med, med_index, alert_key, fname, lname) in enumerate(med_list):
                 med_frame = tk.Frame(med_container, relief="ridge", bd=2, padx=10, pady=8)
                 med_frame.pack(fill="x", padx=5, pady=3)
 
-                # Medication info
                 med_name = med.get('medication_name', 'Unknown Medication')
                 dosage = med.get('dosage_instructions', '')
                 stock = med.get('stock', 0)
                 
-                # Medication name and stock info
                 name_frame = tk.Frame(med_frame)
                 name_frame.pack(fill="x")
                 
@@ -1074,11 +1120,9 @@ class MedicationApp:
                     tk.Label(med_frame, text=dosage, font=("Helvetica", 10), 
                             fg="gray", wraplength=400).pack(anchor="w")
 
-                # Individual medication buttons
                 button_frame = tk.Frame(med_frame)
                 button_frame.pack(fill="x", pady=5)
                 
-                # State tracking
                 taken_var = tk.BooleanVar()
                 skipped_var = tk.BooleanVar()
                 med_states[med_index] = {
@@ -1112,7 +1156,6 @@ class MedicationApp:
                                    font=("Helvetica", 11), width=10)
                 skip_btn.pack(side=tk.LEFT, padx=5)
 
-                # Store button references for color updates
                 med_states[med_index]['taken_btn'] = taken_btn
                 med_states[med_index]['skip_btn'] = skip_btn
 
@@ -1120,26 +1163,23 @@ class MedicationApp:
                 """Update button colors based on selection state"""
                 for med_index, state in med_states.items():
                     if state['taken'].get():
-                        state['taken_btn'].config(bg="#90EE90", relief="sunken")  # Light green
+                        state['taken_btn'].config(bg="#90EE90", relief="sunken")
                         state['skip_btn'].config(bg="SystemButtonFace", relief="raised")
                     elif state['skipped'].get():
                         state['taken_btn'].config(bg="SystemButtonFace", relief="raised")
-                        state['skip_btn'].config(bg="#FFB6C1", relief="sunken")  # Light pink
+                        state['skip_btn'].config(bg="#FFB6C1", relief="sunken")
                     else:
                         state['taken_btn'].config(bg="SystemButtonFace", relief="raised")
                         state['skip_btn'].config(bg="SystemButtonFace", relief="raised")
 
-            # Main action buttons frame
             main_button_frame = tk.Frame(alert, bg="lightgray", relief="raised", bd=1)
             main_button_frame.pack(fill="x", pady=10, padx=10)
 
-            # Summary label
             summary_label = tk.Label(main_button_frame, 
                                    text=f"Managing {len(med_list)} medication(s) for {user_name}",
                                    font=("Helvetica", 12), bg="lightgray")
             summary_label.pack(pady=5)
 
-            # Button container
             button_container = tk.Frame(main_button_frame, bg="lightgray")
             button_container.pack(pady=5)
 
@@ -1165,7 +1205,6 @@ class MedicationApp:
                     if result and result[0]:
                         meds = json.loads(result[0])
                         
-                        # Update stock for taken medications
                         for med_index, state in med_states.items():
                             if state['taken'].get() and 0 <= med_index < len(meds):
                                 current_stock = meds[med_index].get('stock', 0)
@@ -1175,75 +1214,59 @@ class MedicationApp:
                             elif state['skipped'].get():
                                 skipped_count += 1
                             
-                            # Mark as alerted regardless of taken/skipped
                             alerted_today.add(state['alert_key'])
                         
-                        # Save updated medication data
                         c.execute("UPDATE users SET medication_data = ? WHERE user_id = ?", 
                                 (json.dumps(meds), user_id))
                         conn.commit()
                     
                     conn.close()
                     
-                    # Show summary message
                     if taken_count > 0 or skipped_count > 0:
                         summary_msg = f"Applied: {taken_count} taken, {skipped_count} skipped"
                         print(f"[DEBUG] {summary_msg}")
                     
-                    # ✅ FIXED: Remove this alert from user tracking
                     if user_id in self.active_user_alerts:
                         del self.active_user_alerts[user_id]
                     
-                    # IMPORTANT: Decrement active alert count when closing
                     self.active_alert_count = max(0, self.active_alert_count - 1)
                     alert.destroy()
                     
-                    # Refresh user data display if current user matches
                     if self.current_user and self.current_user[0] == user_id:
                         self.users = self.fetch_users()
                         self.show_user_data(self.current_user)
                     
                 except Exception as e:
                     print(f"Error updating medication stocks: {e}")
-                    # ✅ FIXED: Remove this alert from user tracking even on error
                     if user_id in self.active_user_alerts:
                         del self.active_user_alerts[user_id]
-                    # IMPORTANT: Decrement active alert count even on error
                     self.active_alert_count = max(0, self.active_alert_count - 1)
                     alert.destroy()
 
             def cancel_alert():
                 """Close alert without making changes, but mark as alerted to prevent re-triggering"""
-                # Mark individual medications as alerted
                 for med_index, state in med_states.items():
                     alerted_today.add(state['alert_key'])
                 
-                # ✅ FIXED: Remove this alert from user tracking
                 if user_id in self.active_user_alerts:
                     del self.active_user_alerts[user_id]
                 
-                # IMPORTANT: Decrement active alert count when canceling
                 self.active_alert_count = max(0, self.active_alert_count - 1)
                 alert.destroy()
 
-            # Add window close protocol to handle X button clicks
             def on_closing():
                 """Handle window close button (X)"""
-                # Mark individual medications as alerted
                 for med_index, state in med_states.items():
                     alerted_today.add(state['alert_key'])
                 
-                # ✅ FIXED: Remove this alert from user tracking
                 if user_id in self.active_user_alerts:
                     del self.active_user_alerts[user_id]
                 
-                # Decrement active alert count
                 self.active_alert_count = max(0, self.active_alert_count - 1)
                 alert.destroy()
             
             alert.protocol("WM_DELETE_WINDOW", on_closing)
 
-            # Main buttons
             tk.Button(button_container, text="✓ All Meds Taken", command=take_all_meds,
                      font=("Helvetica", 12, "bold"), bg="#90EE90", padx=15, pady=5).pack(side=tk.LEFT, padx=5)
             
@@ -1253,10 +1276,8 @@ class MedicationApp:
             tk.Button(button_container, text="Cancel", command=cancel_alert,
                      font=("Helvetica", 12), bg="#F0F0F0", padx=15, pady=5).pack(side=tk.LEFT, padx=5)
 
-            # Initialize button colors
             update_button_colors()
             
-            # If scrollable, scroll to top
             if needs_scrolling:
                 canvas.yview_moveto(0)
             
@@ -1264,30 +1285,18 @@ class MedicationApp:
             
         except Exception as e:
             print(f"Error creating combined medication alert: {e}")
-            # Ensure we don't leave the counter in an inconsistent state
             self.active_alert_count = max(0, self.active_alert_count - 1)
-#--------------------------------------------------------------------
-
-    def trigger_alert(self, med, user_fname, user_id, med_index, alert_key):
-        """Legacy single medication alert - kept for backward compatibility if needed"""
-        # This method is now largely replaced by trigger_combined_alert
-        # but kept in case single medication alerts are still needed
-        pass
 
 
 def main():
     """Main function to start the application"""
     try:
-        # Initialize database tables
         setup_tables()
         
-        # Create the main window
         root = tk.Tk()
         
-        # Create the application instance
         app = MedicationApp(root)
         
-        # Start the GUI event loop
         root.mainloop()
         
     except Exception as e:
@@ -1297,4 +1306,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
